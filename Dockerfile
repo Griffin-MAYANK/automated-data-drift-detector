@@ -25,4 +25,5 @@ RUN groupadd --gid "${APP_GID}" drift-detector \
 
 USER drift-detector:drift-detector
 
-ENTRYPOINT ["drift-detector"]
+ENTRYPOINT ["sh", "-c", "if command -v \"$1\" >/dev/null 2>&1; then exec \"$@\"; else exec drift-detector \"$@\"; fi", "--"]
+CMD ["drift-detector"]

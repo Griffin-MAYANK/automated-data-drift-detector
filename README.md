@@ -186,6 +186,75 @@ Supported arguments:
 
 The CLI returns exit code `0` when drift analysis completes successfully, even when drift is detected. Invalid input and runtime failures return a non-zero exit code. Drift is a business result, not a program failure.
 
+## REST API
+
+The project also provides a FastAPI layer around the same production drift detection engine. The API is intended for local or containerized batch analysis and does not duplicate feature engineering or detector logic.
+
+Install the package with its runtime dependencies:
+
+```bash
+python -m pip install -e ".[test]"
+```
+
+Start the API on `0.0.0.0:8000`:
+
+```bash
+drift-detector-api
+```
+
+The API provides:
+
+- `GET /health`: returns `{"status": "healthy"}`
+- `GET /metadata`: returns package/API versions, supported feature types, and monitoring features
+- `POST /detect`: runs drift detection and returns the operational summary, safe report names, and feature results
+
+Interactive Swagger UI is available at [http://localhost:8000/docs](http://localhost:8000/docs), ReDoc is available at [http://localhost:8000/redoc](http://localhost:8000/redoc), and the OpenAPI document is available at [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json).
+
+Example request:
+
+```json
+{
+	"data_path": "data/Online Retail.xlsx",
+	"split_date": "2011-07-01",
+	"significance_threshold": 0.05,
+	"min_samples": 30,
+	"output_directory": "reports"
+}
+```
+
+Example response structure:
+
+```json
+{
+	"dataset": "Online Retail.xlsx",
+	"split_date": "2011-07-01",
+	"reference_rows": 245903,
+	"current_rows": 296006,
+	"number_of_features": 8,
+	"overall_status": "ALERT",
+	"alert_count": 1,
+	"investigate_count": 1,
+	"monitor_count": 6,
+	"no_drift_count": 0,
+	"insufficient_data_count": 0,
+	"report_paths": {
+		"csv": "final_drift_report.csv",
+		"json": "final_drift_report.json"
+	},
+	"features": []
+}
+```
+
+Run the API in Docker while keeping the image non-root and mounting local data and reports:
+
+```bash
+docker run --rm -p 8000:8000 \
+	-v "$(pwd)/data:/app/data:ro" \
+	-v "$(pwd)/reports:/app/reports" \
+	drift-detector:1.0.0 \
+	drift-detector-api
+```
+
 ## Reports
 
 The detector produces:
@@ -237,6 +306,9 @@ The installable package is located at `src/drift_detector/`:
 - `statistics.py`: numerical and categorical statistical tests and severity classification
 - `validation.py`: reference/current dataset validation
 - `cli.py`: standard-library argument parsing and production pipeline orchestration
+- `api_models.py`: Pydantic request and response contracts for the REST API
+- `service.py`: API-facing orchestration of the existing production pipeline
+- `api.py`: FastAPI application, routes, error handling, and Uvicorn startup
 
 ## Testing
 
