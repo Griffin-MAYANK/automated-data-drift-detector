@@ -23,6 +23,9 @@ test = [
     "pytest>=8.0",
     "httpx2>=0.1",
 ]
+dashboard = [
+    "streamlit>=1.40",
+]
 
 [project.scripts]
 drift-detector = "drift_detector.cli:main"

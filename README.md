@@ -186,6 +186,39 @@ Supported arguments:
 
 The CLI returns exit code `0` when drift analysis completes successfully, even when drift is detected. Invalid input and runtime failures return a non-zero exit code. Drift is a business result, not a program failure.
 
+## Monitoring Dashboard
+
+The Streamlit monitoring dashboard presents historical drift runs stored by the Stage 3 SQLite persistence layer. It is read-only and does not require the FastAPI server to be running.
+
+Install the optional dashboard dependency:
+
+```bash
+python -m pip install -e ".[dashboard]"
+```
+
+Launch the dashboard:
+
+```bash
+streamlit run dashboard/app.py
+```
+
+The dashboard displays the latest operational status, alert and investigation counts, latest feature results, recent historical runs, status trends, and feature-level magnitude history. It reads through `DriftRepository` and does not duplicate SQL or detection logic.
+
+By default it reads:
+
+```text
+reports/drift_history.db
+```
+
+To use another database, set the same configuration variable used by the API and service:
+
+```bash
+export DRIFT_DETECTOR_DATABASE_PATH=/path/to/drift_history.db
+streamlit run dashboard/app.py
+```
+
+When no database or historical runs exist, the dashboard initializes the database safely and displays an empty state instead of failing. The dashboard uses built-in Streamlit charts and gracefully falls back from normalized magnitude to magnitude for categorical features.
+
 ## REST API
 
 The project also provides a FastAPI layer around the same production drift detection engine. The API is intended for local or containerized batch analysis and does not duplicate feature engineering or detector logic.
@@ -309,6 +342,8 @@ The installable package is located at `src/drift_detector/`:
 - `api_models.py`: Pydantic request and response contracts for the REST API
 - `service.py`: API-facing orchestration of the existing production pipeline
 - `api.py`: FastAPI application, routes, error handling, and Uvicorn startup
+- `database.py`: SQLite schema initialization and shared database configuration
+- `repository.py`: Transaction-safe historical run persistence and read access
 
 ## Testing
 
@@ -318,7 +353,7 @@ Run the complete suite:
 python -m pytest -q
 ```
 
-The current suite has `116 passed` tests covering:
+The current suite has `155 passed` tests covering:
 
 - Statistical calculations
 - Numerical drift
@@ -329,6 +364,8 @@ The current suite has `116 passed` tests covering:
 - Detector behavior
 - Reporting
 - CLI behavior
+- Historical SQLite storage and repository transactions
+- Dashboard data transformations
 - Real-data end-to-end pipeline behavior
 
 ## Continuous Integration
@@ -357,22 +394,32 @@ The current workflow has successfully passed. It does not download the UCI datas
 ├── notebooks/
 │   └── 01_understanding_data_drift.ipynb
 ├── reports/                      # Runtime/local report directory; not committed
+├── dashboard/
+│   ├── __init__.py
+│   ├── app.py
+│   ├── components.py
+│   └── data.py
 ├── src/
 │   └── drift_detector/
 │       ├── __init__.py
 │       ├── cli.py
+│       ├── database.py
 │       ├── config.py
 │       ├── detector.py
 │       ├── features.py
 │       ├── reporting.py
+│       ├── repository.py
 │       ├── statistics.py
 │       └── validation.py
 ├── tests/
 │   ├── test_cli.py
+│   ├── test_dashboard_data.py
+│   ├── test_database.py
 │   ├── test_detector.py
 │   ├── test_features.py
 │   ├── test_pipeline.py
 │   ├── test_reporting.py
+│   ├── test_repository.py
 │   ├── test_statistics.py
 │   └── test_validation.py
 ├── .dockerignore
