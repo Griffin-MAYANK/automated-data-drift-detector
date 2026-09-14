@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi.testclient import TestClient
+import pytest
 
+import drift_detector.api as api
 from drift_detector.api import app
 
 
@@ -63,6 +65,8 @@ def test_detect_requires_required_fields():
     response = client.post("/detect", json={})
 
     assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
 
 
 def test_detect_rejects_invalid_parameters():
@@ -85,6 +89,24 @@ def test_detect_rejects_invalid_parameters():
     ).status_code == 422
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["data_path", "output_directory"],
+)
+def test_detect_rejects_blank_paths(field):
+    payload = {
+        "data_path": "input.xlsx",
+        "split_date": "2011-07-01",
+        "output_directory": "reports",
+    }
+    payload[field] = "   "
+
+    response = client.post("/detect", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
+
+
 def test_detect_missing_dataset_returns_404(tmp_path):
     response = client.post(
         "/detect",
@@ -92,7 +114,25 @@ def test_detect_missing_dataset_returns_404(tmp_path):
     )
 
     assert response.status_code == 404
+    body = response.json()
+    assert body["error"] == "dataset_not_found"
+    assert body["detail"] == "Dataset file was not found."
+    assert body["request_id"] == response.headers["X-Request-ID"]
     assert "traceback" not in response.text.lower()
+
+
+def test_detect_unsupported_extension_returns_400(tmp_path):
+    dataset = tmp_path / "input.csv"
+    dataset.write_text("not an Excel file", encoding="utf-8")
+
+    response = client.post(
+        "/detect",
+        json=detect_payload(dataset, tmp_path / "reports"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "unsupported_dataset"
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
 
 
 def test_detect_invalid_dataset_returns_safe_400(tmp_path):
@@ -105,8 +145,33 @@ def test_detect_invalid_dataset_returns_safe_400(tmp_path):
     )
 
     assert response.status_code == 400
+    assert response.json()["error"] == "invalid_dataset"
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
     assert "Traceback" not in response.text
     assert str(tmp_path) not in response.text
+
+
+def test_unexpected_internal_failure_returns_safe_500(monkeypatch):
+    def fail(request):
+        raise RuntimeError("secret internal filesystem detail")
+
+    monkeypatch.setattr(api, "run_detection", fail)
+    response = client.post(
+        "/detect",
+        json={
+            "data_path": "input.xlsx",
+            "split_date": "2011-07-01",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": "internal_server_error",
+        "detail": "Internal server error.",
+        "request_id": response.headers["X-Request-ID"],
+    }
+    assert "secret internal filesystem detail" not in response.text
+    assert "Traceback" not in response.text
 
 
 def test_detect_success_returns_summary_and_features(tmp_path):
@@ -145,3 +210,18 @@ def test_detect_success_returns_summary_and_features(tmp_path):
         "csv": "final_drift_report.csv",
         "json": "final_drift_report.json",
     }
+    assert body["dataset"] == Path(body["dataset"]).name
+    assert response.headers["X-Request-ID"]
+
+
+def test_supplied_request_id_is_preserved_on_error(tmp_path):
+    request_id = "client-trace-123"
+    response = client.post(
+        "/detect",
+        headers={"X-Request-ID": request_id},
+        json=detect_payload(tmp_path / "missing.xlsx", tmp_path / "reports"),
+    )
+
+    assert response.status_code == 404
+    assert response.headers["X-Request-ID"] == request_id
+    assert response.json()["request_id"] == request_id

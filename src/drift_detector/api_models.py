@@ -27,14 +27,28 @@ class DetectionRequest(BaseModel):
         return value
 
 
+class ErrorResponse(BaseModel):
+    """Stable, safe error response returned by the API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    error: str
+    detail: str
+    request_id: str
+
+
 class HealthResponse(BaseModel):
     """Health endpoint response."""
+
+    model_config = ConfigDict(extra="forbid")
 
     status: str
 
 
 class MetadataResponse(BaseModel):
     """Supported detector metadata exposed by the API."""
+
+    model_config = ConfigDict(extra="forbid")
 
     project_name: str
     api_version: str
@@ -81,6 +95,8 @@ class FeatureResult(BaseModel):
 
 class DetectionResponse(BaseModel):
     """Complete API response for a drift detection run."""
+
+    model_config = ConfigDict(extra="forbid")
 
     dataset: str
     split_date: date

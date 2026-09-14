@@ -10,12 +10,14 @@ from typing import Sequence
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from drift_detector import __version__
 from drift_detector.api_models import (
     DetectionRequest,
     DetectionResponse,
+    ErrorResponse,
     HealthResponse,
     MetadataResponse,
 )
@@ -53,6 +55,7 @@ async def request_logging_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID")
     if not request_id_is_safe(request_id):
         request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
 
     started_at = time.perf_counter()
     try:
@@ -66,7 +69,15 @@ async def request_logging_middleware(request: Request, call_next):
             request.url.path,
             duration_ms,
         )
-        raise
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "internal_server_error",
+                "detail": "Internal server error.",
+                "request_id": request_id,
+            },
+            headers={"X-Request-ID": request_id},
+        )
 
     response.headers["X-Request-ID"] = request_id
     duration_ms = (time.perf_counter() - started_at) * 1000
@@ -93,7 +104,12 @@ async def dataset_not_found_handler(
 ) -> JSONResponse:
     """Return a safe 404 response for missing datasets."""
 
-    return JSONResponse(status_code=404, content={"detail": str(error)})
+    return _error_response(
+        status_code=404,
+        error_code="dataset_not_found",
+        detail=str(error),
+        request=request,
+    )
 
 
 @app.exception_handler(UnsupportedDatasetError)
@@ -103,7 +119,12 @@ async def invalid_dataset_handler(
 ) -> JSONResponse:
     """Return a safe 400 response for invalid datasets."""
 
-    return JSONResponse(status_code=400, content={"detail": str(error)})
+    return _error_response(
+        status_code=400,
+        error_code="unsupported_dataset",
+        detail=str(error),
+        request=request,
+    )
 
 
 @app.exception_handler(InvalidDatasetError)
@@ -113,7 +134,27 @@ async def invalid_dataset_content_handler(
 ) -> JSONResponse:
     """Return a safe 400 response for invalid dataset content."""
 
-    return JSONResponse(status_code=400, content={"detail": str(error)})
+    return _error_response(
+        status_code=400,
+        error_code="invalid_dataset",
+        detail=str(error),
+        request=request,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(
+    request: Request,
+    error: RequestValidationError,
+) -> JSONResponse:
+    """Return a stable 422 response without exposing validation internals."""
+
+    return _error_response(
+        status_code=422,
+        error_code="invalid_request",
+        detail="Request validation failed.",
+        request=request,
+    )
 
 
 @app.exception_handler(Exception)
@@ -123,9 +164,32 @@ async def unexpected_error_handler(
 ) -> JSONResponse:
     """Avoid exposing tracebacks or filesystem details to API clients."""
 
-    return JSONResponse(
+    return _error_response(
         status_code=500,
-        content={"detail": "Internal server error."},
+        error_code="internal_server_error",
+        detail="Internal server error.",
+        request=request,
+    )
+
+
+def _error_response(
+    status_code: int,
+    error_code: str,
+    detail: str,
+    request: Request,
+) -> JSONResponse:
+    """Build a structured error response with the active request ID."""
+
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    body = ErrorResponse(
+        error=error_code,
+        detail=detail,
+        request_id=request_id,
+    ).model_dump()
+    return JSONResponse(
+        status_code=status_code,
+        content=body,
+        headers={"X-Request-ID": request_id},
     )
 
 
@@ -133,6 +197,8 @@ async def unexpected_error_handler(
     "/health",
     response_model=HealthResponse,
     summary="Check API health",
+    description="Return the liveness status of the drift detector API.",
+    responses={200: {"description": "API is healthy."}},
 )
 def health() -> HealthResponse:
     """Return the service health status."""
@@ -144,6 +210,8 @@ def health() -> HealthResponse:
     "/metadata",
     response_model=MetadataResponse,
     summary="Get detector metadata",
+    description="Return API, package, and supported monitoring feature metadata.",
+    responses={200: {"description": "Metadata returned successfully."}},
 )
 def metadata() -> MetadataResponse:
     """Return package, API, and supported feature metadata."""
@@ -162,6 +230,15 @@ def metadata() -> MetadataResponse:
     response_model=DetectionResponse,
     summary="Run drift detection",
     description="Run the existing batch reference/current drift pipeline.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid dataset."},
+        404: {"model": ErrorResponse, "description": "Dataset not found."},
+        422: {"model": ErrorResponse, "description": "Invalid request."},
+        500: {
+            "model": ErrorResponse,
+            "description": "Internal server error.",
+        },
+    },
 )
 def detect(request: DetectionRequest) -> DetectionResponse:
     """Run drift detection using the validated request."""

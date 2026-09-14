@@ -110,7 +110,10 @@ def run_detection(request: DetectionRequest) -> DetectionResponse:
         )
     except (KeyError, TypeError, ValueError) as error:
         logger.error("detection failed dataset=%s error=%s", data_path.name, error)
-        raise InvalidDatasetError(str(error)) from error
+        detail = str(error)
+        if data_path.as_posix() in detail:
+            detail = "Dataset content is invalid."
+        raise InvalidDatasetError(detail) from error
     except (OSError, ImportError, RuntimeError) as error:
         logger.exception("detection failed dataset=%s", data_path.name)
         raise InvalidDatasetError("Dataset processing failed.") from error
