@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pandas as pd
 
@@ -16,11 +17,15 @@ from drift_detector.api_models import (
 from drift_detector.config import DriftConfig
 from drift_detector.detector import detect_dataset_drift
 from drift_detector.features import create_reference_current_features
+from drift_detector.logging_config import get_logger
 from drift_detector.reporting import (
     calculate_operational_summary,
     export_drift_report,
     prepare_json_records,
 )
+
+
+logger = get_logger("service")
 
 
 class DatasetNotFoundError(FileNotFoundError):
@@ -51,7 +56,21 @@ def _validate_dataset_path(data_path: str) -> Path:
 def run_detection(request: DetectionRequest) -> DetectionResponse:
     """Run the existing feature, detector, and reporting pipeline."""
 
-    data_path = _validate_dataset_path(request.data_path)
+    started_at = time.perf_counter()
+    try:
+        data_path = _validate_dataset_path(request.data_path)
+    except (DatasetNotFoundError, UnsupportedDatasetError) as error:
+        logger.error(
+            "detection failed dataset=%s error=%s",
+            Path(request.data_path).name,
+            error,
+        )
+        raise
+    logger.info(
+        "detection started dataset=%s split_date=%s",
+        data_path.name,
+        request.split_date,
+    )
 
     try:
         raw_data = pd.read_excel(data_path)
@@ -60,6 +79,12 @@ def run_detection(request: DetectionRequest) -> DetectionResponse:
                 data=raw_data,
                 split_date=request.split_date,
             )
+        )
+        logger.info(
+            "dataset processed dataset=%s reference_rows=%d current_rows=%d",
+            data_path.name,
+            len(reference_data),
+            len(current_data),
         )
         config = DriftConfig(
             significance_threshold=request.significance_threshold,
@@ -77,12 +102,27 @@ def run_detection(request: DetectionRequest) -> DetectionResponse:
             reference_rows=len(reference_data),
             current_rows=len(current_data),
         )
+        logger.info(
+            "reports generated dataset=%s csv=%s json=%s",
+            data_path.name,
+            Path(exported["csv_path"]).name,
+            Path(exported["json_path"]).name,
+        )
     except (KeyError, TypeError, ValueError) as error:
+        logger.error("detection failed dataset=%s error=%s", data_path.name, error)
         raise InvalidDatasetError(str(error)) from error
     except (OSError, ImportError, RuntimeError) as error:
+        logger.exception("detection failed dataset=%s", data_path.name)
         raise InvalidDatasetError("Dataset processing failed.") from error
 
     summary = calculate_operational_summary(report)
+    logger.info(
+        "detection complete dataset=%s features=%d overall_status=%s duration_ms=%.2f",
+        data_path.name,
+        summary["number_of_features"],
+        summary["overall_status"],
+        (time.perf_counter() - started_at) * 1000,
+    )
     records = prepare_json_records(report)
 
     return DetectionResponse(

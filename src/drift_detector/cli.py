@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -12,10 +13,14 @@ import pandas as pd
 from drift_detector.config import DriftConfig
 from drift_detector.detector import detect_dataset_drift
 from drift_detector.features import create_reference_current_features
+from drift_detector.logging_config import configure_logging, get_logger
 from drift_detector.reporting import (
     calculate_operational_summary,
     export_drift_report,
 )
+
+
+logger = get_logger("cli")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,9 +87,17 @@ def _print_summary(
 def main(argv: Sequence[str] | None = None) -> int:
     """Run drift detection from command-line arguments."""
 
+    configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
     data_path = Path(args.data)
+    started_at = time.perf_counter()
+
+    logger.info(
+        "detector start data=%s split_date=%s",
+        data_path,
+        args.split_date,
+    )
 
     try:
         if not data_path.is_file():
@@ -103,6 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 split_date=split_date,
             )
         )
+        logger.info(
+            "dataset processed reference_rows=%d current_rows=%d",
+            len(reference_data),
+            len(current_data),
+        )
 
         config = DriftConfig(
             significance_threshold=args.significance_threshold,
@@ -114,12 +132,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             config=config,
         )
         summary = calculate_operational_summary(report)
+        logger.info(
+            "drift analysis complete features=%d overall_status=%s",
+            summary["number_of_features"],
+            summary["overall_status"],
+        )
         exported = export_drift_report(
             report=report,
             output_directory=args.output_dir,
             dataset_name=data_path.name,
             reference_rows=len(reference_data),
             current_rows=len(current_data),
+        )
+        logger.info(
+            "reports generated csv=%s json=%s",
+            exported["csv_path"].name,
+            exported["json_path"].name,
         )
 
         _print_summary(
@@ -130,12 +158,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             csv_path=exported["csv_path"],
             json_path=exported["json_path"],
         )
+        logger.info(
+            "detector complete duration_ms=%.2f",
+            (time.perf_counter() - started_at) * 1000,
+        )
         return 0
 
     except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        logger.error("detector failed error=%s", error)
         print(f"Error: {error}", file=sys.stderr)
         return 1
     except Exception as error:
+        logger.exception("unexpected detector failure")
         print(f"Error: drift detection failed: {error}", file=sys.stderr)
         return 1
 

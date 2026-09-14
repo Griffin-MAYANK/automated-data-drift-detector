@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+import uuid
 from typing import Sequence
 
 import uvicorn
@@ -19,6 +21,10 @@ from drift_detector.api_models import (
 )
 from drift_detector.config import FeatureType
 from drift_detector.features import MONITORING_FEATURES
+from drift_detector.logging_config import (
+    configure_logging,
+    request_id_is_safe,
+)
 from drift_detector.service import (
     DatasetNotFoundError,
     InvalidDatasetError,
@@ -28,6 +34,7 @@ from drift_detector.service import (
 
 
 API_VERSION = "1.0.0"
+logger = configure_logging()
 
 app = FastAPI(
     title="Automated Data Drift Detector API",
@@ -37,6 +44,46 @@ app = FastAPI(
         "detection pipeline."
     ),
 )
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """Log request lifecycle details and attach a request correlation ID."""
+
+    request_id = request.headers.get("X-Request-ID")
+    if not request_id_is_safe(request_id):
+        request_id = str(uuid.uuid4())
+
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.error(
+            "request failed request_id=%s method=%s path=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    response.headers["X-Request-ID"] = request_id
+    duration_ms = (time.perf_counter() - started_at) * 1000
+    log_method = logger.info
+    if response.status_code >= 500:
+        log_method = logger.error
+    elif response.status_code >= 400:
+        log_method = logger.warning
+    log_method(
+        "request complete request_id=%s method=%s path=%s status_code=%d duration_ms=%.2f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 @app.exception_handler(DatasetNotFoundError)
