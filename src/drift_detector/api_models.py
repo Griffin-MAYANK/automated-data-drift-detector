@@ -98,6 +98,7 @@ class DetectionResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    run_id: str
     dataset: str
     split_date: date
     reference_rows: int
@@ -111,3 +112,60 @@ class DetectionResponse(BaseModel):
     insufficient_data_count: int
     report_paths: ReportPaths
     features: list[FeatureResult]
+
+
+class HistoricalFeatureResult(FeatureResult):
+    """Feature result persisted in historical storage."""
+
+    id: int
+    run_id: str
+
+
+class HistoricalRun(BaseModel):
+    """Historical detection run metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    created_at: str
+    dataset: str
+    split_date: date
+    reference_rows: int
+    current_rows: int
+    number_of_features: int
+    overall_status: str
+    alert_count: int
+    investigate_count: int
+    monitor_count: int
+    no_drift_count: int
+    insufficient_data_count: int
+
+
+class HistoricalRunsResponse(BaseModel):
+    """Response containing recent historical run metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runs: list[HistoricalRun]
+
+
+class HistoricalRunResponse(HistoricalRun):
+    """Complete historical run with feature results."""
+
+    features: list[HistoricalFeatureResult]
+
+
+class FeatureHistoryItem(HistoricalFeatureResult):
+    """Feature history item with its originating run context."""
+
+    created_at: str
+    dataset: str
+
+
+class FeatureHistoryResponse(BaseModel):
+    """Response containing historical results for one feature."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    results: list[FeatureHistoryItem]

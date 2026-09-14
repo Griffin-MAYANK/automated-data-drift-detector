@@ -6,6 +6,14 @@ import pytest
 from drift_detector.cli import main
 
 
+@pytest.fixture(autouse=True)
+def use_temporary_database(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "DRIFT_DETECTOR_DATABASE_PATH",
+        str(tmp_path / "history.db"),
+    )
+
+
 def create_cli_dataset(path: Path) -> Path:
     """Create a small local Excel dataset for CLI tests."""
 
@@ -106,5 +114,6 @@ def test_valid_arguments_generate_reports_and_return_zero(tmp_path, capsys):
     assert "INVESTIGATE count:" in output
     assert "MONITOR count:" in output
     assert "NO_DRIFT count:" in output
+    assert "Run ID: drift-" in output
     assert (output_directory / "final_drift_report.csv").exists()
     assert (output_directory / "final_drift_report.json").exists()

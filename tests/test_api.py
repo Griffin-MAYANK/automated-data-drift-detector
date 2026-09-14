@@ -11,6 +11,14 @@ from drift_detector.api import app
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def use_temporary_database(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "DRIFT_DETECTOR_DATABASE_PATH",
+        str(tmp_path / "history.db"),
+    )
+
+
 def write_api_dataset(path: Path) -> Path:
     rows = []
     for index in range(40):
@@ -186,6 +194,7 @@ def test_detect_success_returns_summary_and_features(tmp_path):
 
     assert response.status_code == 200
     assert body["dataset"] == "input.xlsx"
+    assert body["run_id"].startswith("drift-")
     assert body["reference_rows"] == 40
     assert body["current_rows"] == 40
     assert body["number_of_features"] == 8
@@ -225,3 +234,43 @@ def test_supplied_request_id_is_preserved_on_error(tmp_path):
     assert response.status_code == 404
     assert response.headers["X-Request-ID"] == request_id
     assert response.json()["request_id"] == request_id
+
+
+def test_historical_run_endpoints(tmp_path):
+    dataset = write_api_dataset(tmp_path / "input.xlsx")
+    output_directory = tmp_path / "reports"
+    detect_response = client.post(
+        "/detect",
+        json=detect_payload(dataset, output_directory),
+    )
+    run_id = detect_response.json()["run_id"]
+
+    runs_response = client.get("/runs?limit=1")
+    run_response = client.get(f"/runs/{run_id}")
+    history_response = client.get("/features/month/history?limit=1")
+
+    assert runs_response.status_code == 200
+    assert runs_response.json()["runs"][0]["run_id"] == run_id
+    assert run_response.status_code == 200
+    assert run_response.json()["run_id"] == run_id
+    assert len(run_response.json()["features"]) == 8
+    assert history_response.status_code == 200
+    assert history_response.json()["feature"] == "month"
+    assert history_response.json()["results"][0]["run_id"] == run_id
+
+
+def test_missing_historical_run_returns_structured_404():
+    response = client.get("/runs/drift-missing")
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "run_not_found"
+    assert response.json()["detail"] == "Detection run was not found."
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
+
+
+@pytest.mark.parametrize("url", ["/runs?limit=0", "/runs?limit=101"])
+def test_historical_run_limit_is_validated(url):
+    response = client.get(url)
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"

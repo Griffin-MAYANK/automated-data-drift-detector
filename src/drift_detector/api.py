@@ -6,10 +6,11 @@ import argparse
 import sys
 import time
 import uuid
+import sqlite3
 from typing import Sequence
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -18,10 +19,14 @@ from drift_detector.api_models import (
     DetectionRequest,
     DetectionResponse,
     ErrorResponse,
+    FeatureHistoryResponse,
     HealthResponse,
+    HistoricalRunResponse,
+    HistoricalRunsResponse,
     MetadataResponse,
 )
 from drift_detector.config import FeatureType
+from drift_detector.database import get_database_path
 from drift_detector.features import MONITORING_FEATURES
 from drift_detector.logging_config import (
     configure_logging,
@@ -30,13 +35,19 @@ from drift_detector.logging_config import (
 from drift_detector.service import (
     DatasetNotFoundError,
     InvalidDatasetError,
+    HistoricalStorageError,
     UnsupportedDatasetError,
     run_detection,
 )
+from drift_detector.repository import DriftRepository
 
 
 API_VERSION = "1.0.0"
 logger = configure_logging()
+
+
+class RunNotFoundError(LookupError):
+    """Raised when a requested historical run does not exist."""
 
 app = FastAPI(
     title="Automated Data Drift Detector API",
@@ -172,6 +183,37 @@ async def unexpected_error_handler(
     )
 
 
+@app.exception_handler(HistoricalStorageError)
+async def historical_storage_error_handler(
+    request: Request,
+    error: HistoricalStorageError,
+) -> JSONResponse:
+    """Return a safe response when historical storage fails."""
+
+    logger.exception("historical storage failure")
+    return _error_response(
+        status_code=500,
+        error_code="internal_server_error",
+        detail="Internal server error.",
+        request=request,
+    )
+
+
+@app.exception_handler(RunNotFoundError)
+async def run_not_found_handler(
+    request: Request,
+    error: RunNotFoundError,
+) -> JSONResponse:
+    """Return a structured 404 for missing historical runs."""
+
+    return _error_response(
+        status_code=404,
+        error_code="run_not_found",
+        detail="Detection run was not found.",
+        request=request,
+    )
+
+
 def _error_response(
     status_code: int,
     error_code: str,
@@ -244,6 +286,76 @@ def detect(request: DetectionRequest) -> DetectionResponse:
     """Run drift detection using the validated request."""
 
     return run_detection(request)
+
+
+def _repository() -> DriftRepository:
+    """Create the repository using the configured application database."""
+
+    return DriftRepository(get_database_path())
+
+
+@app.get(
+    "/runs",
+    response_model=HistoricalRunsResponse,
+    summary="List historical detection runs",
+    description="Return recent historical detection run summaries.",
+    responses={500: {"model": ErrorResponse, "description": "Database error."}},
+)
+def list_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> HistoricalRunsResponse:
+    """Return recent persisted detection runs."""
+
+    try:
+        runs = _repository().list_runs(limit=limit)
+    except sqlite3.Error as error:
+        logger.exception("failed to list historical runs")
+        raise HistoricalStorageError("Historical run storage failed.") from error
+    return HistoricalRunsResponse(runs=runs)
+
+
+@app.get(
+    "/runs/{run_id}",
+    response_model=HistoricalRunResponse,
+    summary="Get a historical detection run",
+    description="Return one persisted detection run and all feature results.",
+    responses={
+        404: {"model": ErrorResponse, "description": "Run not found."},
+        500: {"model": ErrorResponse, "description": "Database error."},
+    },
+)
+def get_run(run_id: str) -> HistoricalRunResponse:
+    """Return one historical run by its generated run ID."""
+
+    try:
+        run = _repository().get_run(run_id)
+    except sqlite3.Error as error:
+        logger.exception("failed to retrieve historical run")
+        raise HistoricalStorageError("Historical run storage failed.") from error
+    if run is None:
+        raise RunNotFoundError(run_id)
+    return HistoricalRunResponse.model_validate(run)
+
+
+@app.get(
+    "/features/{feature}/history",
+    response_model=FeatureHistoryResponse,
+    summary="Get feature drift history",
+    description="Return recent persisted results for one monitored feature.",
+    responses={500: {"model": ErrorResponse, "description": "Database error."}},
+)
+def feature_history(
+    feature: str,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> FeatureHistoryResponse:
+    """Return recent historical results for a feature."""
+
+    try:
+        results = _repository().get_feature_history(feature=feature, limit=limit)
+    except sqlite3.Error as error:
+        logger.exception("failed to retrieve feature history")
+        raise HistoricalStorageError("Historical run storage failed.") from error
+    return FeatureHistoryResponse(feature=feature, results=results)
 
 
 def build_parser() -> argparse.ArgumentParser:

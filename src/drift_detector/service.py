@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
+import sqlite3
+import uuid
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -15,9 +18,11 @@ from drift_detector.api_models import (
     ReportPaths,
 )
 from drift_detector.config import DriftConfig
+from drift_detector.database import get_database_path
 from drift_detector.detector import detect_dataset_drift
 from drift_detector.features import create_reference_current_features
 from drift_detector.logging_config import get_logger
+from drift_detector.repository import DriftRepository
 from drift_detector.reporting import (
     calculate_operational_summary,
     export_drift_report,
@@ -38,6 +43,54 @@ class UnsupportedDatasetError(ValueError):
 
 class InvalidDatasetError(ValueError):
     """Raised when the dataset cannot be processed by the engine."""
+
+
+class HistoricalStorageError(RuntimeError):
+    """Raised when a successful run cannot be persisted."""
+
+
+def persist_detection_result(
+    request: DetectionRequest,
+    data_path: Path,
+    reference_data: pd.DataFrame,
+    current_data: pd.DataFrame,
+    summary: dict,
+    records: list[dict],
+) -> str:
+    """Persist report metadata and feature results as one historical run."""
+
+    run_id = f"drift-{uuid.uuid4()}"
+    logger.info("generated run_id=%s dataset=%s", run_id, data_path.name)
+    run_metadata = {
+        "run_id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "dataset": data_path.name,
+        "split_date": request.split_date.isoformat(),
+        **{
+            key: summary[key]
+            for key in (
+                "number_of_features",
+                "overall_status",
+                "alert_count",
+                "investigate_count",
+                "monitor_count",
+                "no_drift_count",
+                "insufficient_data_count",
+            )
+        },
+        "reference_rows": len(reference_data),
+        "current_rows": len(current_data),
+    }
+    try:
+        DriftRepository(get_database_path()).save_detection_result(
+            run=run_metadata,
+            features=records,
+        )
+        logger.info("historical persistence succeeded run_id=%s", run_id)
+    except sqlite3.Error as error:
+        logger.exception("historical persistence failed run_id=%s", run_id)
+        raise HistoricalStorageError("Historical run storage failed.") from error
+    return run_id
 
 
 def _validate_dataset_path(data_path: str) -> Path:
@@ -119,6 +172,16 @@ def run_detection(request: DetectionRequest) -> DetectionResponse:
         raise InvalidDatasetError("Dataset processing failed.") from error
 
     summary = calculate_operational_summary(report)
+    records = prepare_json_records(report)
+    run_id = persist_detection_result(
+        request=request,
+        data_path=data_path,
+        reference_data=reference_data,
+        current_data=current_data,
+        summary=summary,
+        records=records,
+    )
+
     logger.info(
         "detection complete dataset=%s features=%d overall_status=%s duration_ms=%.2f",
         data_path.name,
@@ -126,9 +189,8 @@ def run_detection(request: DetectionRequest) -> DetectionResponse:
         summary["overall_status"],
         (time.perf_counter() - started_at) * 1000,
     )
-    records = prepare_json_records(report)
-
     return DetectionResponse(
+        run_id=run_id,
         dataset=data_path.name,
         split_date=request.split_date,
         reference_rows=len(reference_data),

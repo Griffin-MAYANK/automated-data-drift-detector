@@ -12,6 +12,14 @@ from drift_detector.service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def use_temporary_database(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "DRIFT_DETECTOR_DATABASE_PATH",
+        str(tmp_path / "history.db"),
+    )
+
+
 def write_service_dataset(path: Path) -> Path:
     rows = []
     for index in range(40):
@@ -58,6 +66,8 @@ def test_service_runs_pipeline_and_generates_reports(tmp_path):
     assert result.report_paths.json_path == "final_drift_report.json"
     assert (output_directory / result.report_paths.csv).exists()
     assert (output_directory / result.report_paths.json_path).exists()
+    assert result.run_id.startswith("drift-")
+    assert (tmp_path / "history.db").exists()
 
 
 def test_service_propagates_configuration(tmp_path, monkeypatch):

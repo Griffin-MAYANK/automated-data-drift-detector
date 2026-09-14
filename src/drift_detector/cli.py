@@ -10,13 +10,16 @@ from typing import Sequence
 
 import pandas as pd
 
+from drift_detector.api_models import DetectionRequest
 from drift_detector.config import DriftConfig
 from drift_detector.detector import detect_dataset_drift
 from drift_detector.features import create_reference_current_features
 from drift_detector.logging_config import configure_logging, get_logger
+from drift_detector.service import persist_detection_result
 from drift_detector.reporting import (
     calculate_operational_summary,
     export_drift_report,
+    prepare_json_records,
 )
 
 
@@ -149,6 +152,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             exported["csv_path"].name,
             exported["json_path"].name,
         )
+        request = DetectionRequest(
+            data_path=str(data_path),
+            split_date=split_date.date(),
+            significance_threshold=args.significance_threshold,
+            min_samples=args.min_samples,
+            output_directory=args.output_dir,
+        )
+        run_id = persist_detection_result(
+            request=request,
+            data_path=data_path,
+            reference_data=reference_data,
+            current_data=current_data,
+            summary=summary,
+            records=prepare_json_records(report),
+        )
+        print(f"Run ID: {run_id}")
+        logger.info("historical persistence succeeded run_id=%s", run_id)
 
         _print_summary(
             data_path=data_path,
