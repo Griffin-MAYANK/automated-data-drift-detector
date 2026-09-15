@@ -1,0 +1,75 @@
+name: Scheduled Drift Detection
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  detect-drift:
+    name: Run scheduled drift detection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project
+        run: python -m pip install .
+
+      - name: Download monitoring dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          dataset_url="https://archive.ics.uci.edu/static/public/352/online+retail.zip"
+          mkdir -p data
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output /tmp/online-retail.zip \
+            "$dataset_url"
+          unzip -j -o /tmp/online-retail.zip "Online Retail.xlsx" -d data
+
+      - name: Verify monitoring dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "data/Online Retail.xlsx" ]]; then
+            echo "Downloaded dataset is missing or empty: data/Online Retail.xlsx" >&2
+            exit 1
+          fi
+
+      - name: Run drift detector
+        shell: bash
+        env:
+          DRIFT_DETECTOR_DATABASE_PATH: reports/drift_history.db
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          drift-detector \
+            --data "data/Online Retail.xlsx" \
+            --split-date "2011-07-01" \
+            --output-dir reports
+
+      - name: Upload drift reports and history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-detection-${{ github.run_number }}
+          path: |
+            reports/final_drift_report.csv
+            reports/final_drift_report.json
+            reports/drift_history.db
+          if-no-files-found: warn
+          retention-days: 30

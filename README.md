@@ -383,13 +383,30 @@ The [GitHub Actions workflow](.github/workflows/ci.yml) runs on pushes to `main`
 
 The current workflow has successfully passed. It does not download the UCI dataset and does not push or deploy an image.
 
+## Scheduled Automation
+
+The [Scheduled Drift Detection workflow](.github/workflows/scheduled-drift-detection.yml) runs the existing `drift-detector` CLI automatically once daily at `02:00 UTC`. It can also be started manually from the GitHub Actions `workflow_dispatch` button.
+
+The workflow installs the packaged project with Python 3.12, downloads the public UCI Online Retail dataset at runtime from the official UCI archive, extracts it to `data/Online Retail.xlsx`, verifies that the file is non-empty, and runs:
+
+```bash
+DRIFT_DETECTOR_DATABASE_PATH=reports/drift_history.db \
+drift-detector \
+	--data "data/Online Retail.xlsx" \
+	--split-date "2011-07-01" \
+	--output-dir reports
+```
+
+The dataset is not committed to Git. The workflow depends on the availability of the official UCI dataset URL at runtime. The generated CSV report, JSON report, and SQLite history database are uploaded as temporary workflow artifacts named with the GitHub Actions run number. Because GitHub-hosted runners are temporary, artifact-based history is not a permanent production database. Persistent cloud storage will be addressed in a later deployment stage.
+
 ## Repository Structure
 
 ```text
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml
+│       ├── ci.yml
+│       └── scheduled-drift-detection.yml
 ├── data/                         # Runtime/local dataset directory; not committed
 ├── notebooks/
 │   └── 01_understanding_data_drift.ipynb
